@@ -575,6 +575,7 @@ class Model(nn.Module):
 
         # Init weights, biases
         initialize_weights(self)
+        #print('[model]:', self.model[54])
         self.info()
         logger.info('')
 
@@ -797,6 +798,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f] * args[0] ** 2
         elif m is Expand:
             c2 = ch[f] // args[0] ** 2
+        elif m is GraphFPN:
+            c2 = 0  # without single output
+        elif m is Gnn2Cnn:
+            c2 = 256
         else:
             c2 = ch[f]
 

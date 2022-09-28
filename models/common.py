@@ -1,6 +1,7 @@
 import math
 from copy import copy
 from pathlib import Path
+from wsgiref import headers
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,10 @@ from utils.datasets import letterbox
 from utils.general import non_max_suppression, make_divisible, scale_coords, increment_path, xyxy2xywh
 from utils.plots import color_list, plot_one_box
 from utils.torch_utils import time_synchronized
+
+import dgl
+from dgl.nn.pytorch.conv import GATConv
+from models.gfpn_graph import *
 
 
 ##### basic ####
@@ -105,6 +110,7 @@ class Conv(nn.Module):
         self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
 
     def forward(self, x):
+        #print('[Conv is_leaf?]:', x.is_leaf, '[Conv.device]:', x.device)
         return self.act(self.bn(self.conv(x)))
 
     def fuseforward(self, x):
@@ -2016,4 +2022,114 @@ class ST2CSPC(nn.Module):
         y2 = self.cv2(x)
         return self.cv4(torch.cat((y1, y2), dim=1))
 
-##### end of swin transformer v2 #####   
+##### end of swin transformer v2 #####
+
+
+##### graph FPN #####
+
+class ContextualLayers(nn.Module):
+
+    def __init__(self, in_feats, out_feats):
+        super().__init__()
+        self.in_feats = in_feats
+        self.gat1 = GATConv(in_feats, out_feats, 1, activation=nn.ReLU())
+        self.gat2 = GATConv(in_feats, out_feats, 1, activation=nn.ReLU())
+        self.gat3 = GATConv(in_feats, out_feats, 1, activation=nn.ReLU())
+
+    def forward(self, g, out_feat):
+        h = self.gat1(g, out_feat)
+        h = self.gat2(g, h)
+        h = self.gat3(g, h)
+        h = torch.squeeze(h)
+        return h
+
+
+class HierarchicalLayers(nn.Module):
+
+    def __init__(self, in_feats, out_feats):
+        super().__init__()
+        self.in_feats = in_feats
+        self.gat1 = GATConv(in_feats, out_feats, 1, activation=nn.ReLU())
+        self.gat2 = GATConv(in_feats, out_feats, 1, activation=nn.ReLU())
+        self.gat3 = GATConv(in_feats, out_feats, 1, activation=nn.ReLU())
+
+    def forward(self, g, out_feat):
+        h = self.gat1(g, out_feat)
+        h = self.gat2(g, h)
+        h = self.gat3(g, h)
+        h = torch.squeeze(h)
+        return h
+
+
+class GraphFPN(nn.Module):
+
+    def __init__(self, in_feats=256, out_feats=256):
+        super(GraphFPN, self).__init__()
+        self.context1 = ContextualLayers(in_feats, out_feats)
+        self.context2 = ContextualLayers(in_feats, out_feats)
+        self.context3 = ContextualLayers(in_feats, out_feats)
+        self.hierarch1 = HierarchicalLayers(in_feats, out_feats)
+        self.hierarch2 = HierarchicalLayers(in_feats, out_feats)
+        self.hierarch3 = HierarchicalLayers(in_feats, out_feats)
+        self.context4 = ContextualLayers(in_feats, out_feats)
+        self.context5 = ContextualLayers(in_feats, out_feats)
+        self.context6 = ContextualLayers(in_feats, out_feats)
+
+        # check whether modify 1344 -> 21504(1344 * 16 batches)
+        self.g = simple_birected(build_edges(heterograph("pixel", 256, 1344 * 1)))
+        self.g = dgl.add_self_loop(self.g, etype="contextual")
+        self.g = dgl.add_self_loop(self.g, etype="hierarchical")
+        self.subg_c = hetero_subgraph(self.g, "contextual")
+        self.subg_h = hetero_subgraph(self.g, "hierarchical")
+
+
+    def forward(self, x):
+        # Convolutional feature pyramid network
+        p3_output, p4_output, p5_output = x
+        
+        p3_output = torch.permute(p3_output, [0, 2, 3, 1])
+        p4_output = torch.permute(p4_output, [0, 2, 3, 1])
+        p5_output = torch.permute(p5_output, [0, 2, 3, 1])
+        #print('p3_output:', p3_output.shape, 'p4_output:', p4_output.shape, 'p5_output:', p5_output.shape)
+
+        # Graph feature pyramid network
+        p3_gnn = torch.reshape(p3_output, [-1, 256])
+        p4_gnn = torch.reshape(p4_output, [-1, 256])
+        p5_gnn = torch.reshape(p5_output, [-1, 256])
+        p_final = torch.concat([p3_gnn, p4_gnn, p5_gnn], axis=0)
+        #print('p_final:', p_final.shape)
+        
+        
+        device = p_final.device
+        self.g, self.subg_c, self.subg_h    \
+            = self.g.to(device), self.subg_c.to(device), self.subg_h.to(device)
+        
+        self.g = cnn_gnn(self.g, p_final)
+        
+        nodes_update(self.subg_c, self.context1(self.subg_c, self.subg_c.ndata["pixel"]))
+        nodes_update(self.subg_c, self.context2(self.subg_c, self.subg_c.ndata["pixel"]))
+        nodes_update(self.subg_c, self.context3(self.subg_c, self.subg_c.ndata["pixel"]))
+        nodes_update(self.subg_h, self.hierarch1(self.subg_h, self.subg_h.ndata["pixel"]))
+        nodes_update(self.subg_h, self.hierarch2(self.subg_h, self.subg_h.ndata["pixel"]))
+        nodes_update(self.subg_h, self.hierarch3(self.subg_h, self.subg_h.ndata["pixel"]))
+        nodes_update(self.subg_c, self.context4(self.subg_c, self.subg_c.ndata["pixel"]))
+        nodes_update(self.subg_c, self.context5(self.subg_c, self.subg_c.ndata["pixel"]))
+        nodes_update(self.subg_c, self.context6(self.subg_c, self.subg_c.ndata["pixel"]))
+        
+        # data fusion
+        p_cnn = gnn_cnn(self.g) # return list
+        
+        return p_cnn
+
+
+class Gnn2Cnn(nn.Module):
+
+    def __init__(self, idx_output):
+        super(Gnn2Cnn, self).__init__()
+        self.idx_output = idx_output
+
+    def forward(self, x):
+        return x[self.idx_output]
+
+
+##### end of graph FPN #####
