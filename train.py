@@ -370,7 +370,7 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Backward
             scaler.scale(loss).backward()
-
+            
             # Optimize
             if ni % accumulate == 0:
                 scaler.step(optimizer)  # optimizer.step

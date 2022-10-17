@@ -6,8 +6,6 @@ from dgl.nn import AvgPooling
 
 from models.common import *
 
-cpu = torch.device('cpu')
-gpu = torch.device('cuda:0')
 
 def stochastic_create_edges(g, n_edges = 0):
     assert n_edges > g.num_nodes(), "number of edges is smaller than that of nodes"
@@ -38,14 +36,9 @@ def heterograph(name_n_feature, dim_n_feature, nb_nodes = 2, is_birect = True):
         ('n', 'hierarchical', 'n'): (torch.tensor([0]), torch.tensor([1]))
     }
     g = dgl.heterograph(graph_data, num_nodes_dict = {'n': nb_nodes})
-    g.nodes['n'].data[name_n_feature] = torch.zeros([g.num_nodes(), dim_n_feature], requires_grad=True)
+    g.nodes['n'].data[name_n_feature] = torch.zeros([g.num_nodes(), dim_n_feature])
     if is_birect:
-        device = g.device
-        print('device:', device)
-        g = g.to(cpu)
         g = dgl.to_bidirected(g, copy_ndata = True)
-        g = g.to(device)
-
     return g
 
 
@@ -72,27 +65,18 @@ def neighbor_25(i, c_shape):
 
 
 def simple_graph(g):
-    device = g.device
-    g = g.to(cpu)
     g = dgl.to_simple(g, copy_ndata = True)
-    g = g.to(device)
     return g
 
 
 def to_birected(g):
-    device = g.device
-    g = g.to(cpu)
     g = dgl.to_bidirected(g, copy_ndata = True)
-    g = g.to(device)
     return g
 
 
 def simple_birected(g):
-    device = g.device
-    g = g.to(cpu)
     g = dgl.to_simple(g, copy_ndata = True)
     g = dgl.to_bidirected(g, copy_ndata = True)
-    g = g.to(device)
     return g
 
 
@@ -138,40 +122,37 @@ def build_edges(g, c3_shape = 32, c4_shape = 16, c5_shape = 8):
         g = hetero_add_edges(g, c5[i : (c5_size+i) : c5_shape], c5[i+1 : (c5_size+i+1) : c5_shape], 'contextual') 
     
     # build hierarchical edges
-    # peter, wait to modify
     c3_stride = torch.reshape(c3, (c3_shape, c3_shape))[2:c3_shape:2, 2:c3_shape:2]  # Get pixel indices in C3 for build hierarchical edges
     c4_stride = torch.reshape(c4, (c4_shape, c4_shape))[2:c4_shape:2, 2:c4_shape:2]
     c5_stride = torch.reshape(c3, (c3_shape, c3_shape))[2:c3_shape-4:4, 2:c3_shape-4:4]
-    print('c3_stride.shape:', c3_stride.shape, 'c4_stride.shape:', c4_stride.shape, 'c5_stride.shape:', c5_stride.shape)
 
-    
     # Edges between c3 and c4
     counter = 1
-    for i in torch.reshape(c3_stride, [-1]).numpy():
+    for i in c3_stride.flatten().numpy():
         c3_9 = neighbor_9(i, c3_shape)
         g = hetero_add_edges(g, c3_9, c4[counter], 'hierarchical') 
-        if counter % (c4_shape-1) == 0 :
-            counter += 2 
+        if counter % (c4_shape-1) == 0:
+            counter += 2
         else:
             counter += 1
 
     # Edges between c4 and c5
     counter = 1
-    for i in torch.reshape(c4_stride, [-1]).numpy():
+    for i in c4_stride.flatten().numpy():
         c4_9 = neighbor_9(i, c4_shape)
         g = hetero_add_edges(g, c4_9, c5[counter], 'hierarchical') 
-        if counter % (c5_shape-1) == 0 :
-            counter += 2 
+        if counter % (c5_shape-1) == 0:
+            counter += 2
         else:
             counter += 1
     
     # Edges between c3 and c5
     counter = 1
-    for i in torch.reshape(c5_stride, [-1]).numpy():
+    for i in c5_stride.flatten().numpy():
         c5_9 = neighbor_25(i, c3_shape)
         g = hetero_add_edges(g, c5_9, c5[counter], 'hierarchical') 
-        if counter % (c5_shape-1) == 0 :
-            counter += 2 
+        if counter % (c5_shape-1) == 0:
+            counter += 2
         else:
             counter += 1
     return g
@@ -186,13 +167,7 @@ def hetero_subgraph(g, edges):
 
 
 def cnn_gnn(g, c):
-    #print('g.ndata["pixel"]:', len(g.ndata["pixel"]), 'c:', len(c))
-    #print('g.device:', g.device, 'c.device:', c.device)
-    # for code test, skip first check
-    if (len(g.ndata["pixel"]) != len(c)):
-        return g
-    else:
-        g.ndata["pixel"] = c
+    g.ndata["pixel"] = c
     return g
 
 

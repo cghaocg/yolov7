@@ -216,8 +216,8 @@ def model_info(model, verbose=False, img_size=640):
         from thop import profile
         stride = max(int(model.stride.max()), 32) if hasattr(model, 'stride') else 32
         img = torch.zeros((1, model.yaml.get('ch', 3), stride, stride), device=next(model.parameters()).device)  # input
-        #flops = profile(deepcopy(model), inputs=(img,), verbose=False)[0] / 1E9 * 2  # stride GFLOPS        
-        flops = profile(model, inputs=(img,), verbose=False)[0] / 1E9 * 2  # stride GFLOPS  # peter
+        #flops = profile(deepcopy(model), inputs=(img,), verbose=False)[0] / 1E9 * 2  # stride GFLOPS
+        flops = profile(model, inputs=(img,), verbose=False)[0] / 1E9 * 2  # stride GFLOPS        
         img_size = img_size if isinstance(img_size, list) else [img_size, img_size]  # expand if int/float
         fs = ', %.1f GFLOPS' % (flops * img_size[0] / stride * img_size[1] / stride)  # 640x640 GFLOPS
     except (ImportError, Exception):
@@ -279,7 +279,8 @@ class ModelEMA:
 
     def __init__(self, model, decay=0.9999, updates=0):
         # Create EMA
-        self.ema = deepcopy(model.module if is_parallel(model) else model).eval()  # FP32 EMA
+        #self.ema = deepcopy(model.module if is_parallel(model) else model).eval()  # FP32 EMA
+        self.ema = (model.module if is_parallel(model) else model).eval()  # FP32 EMA
         # if next(model.parameters()).device.type != 'cpu':
         #     self.ema.half()  # FP16 EMA
         self.updates = updates  # number of EMA updates

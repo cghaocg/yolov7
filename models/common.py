@@ -19,7 +19,7 @@ from utils.plots import color_list, plot_one_box
 from utils.torch_utils import time_synchronized
 
 import dgl
-from dgl.nn.pytorch.conv import GATConv
+from dgl.nn import GATConv
 from models.gfpn_graph import *
 
 
@@ -110,7 +110,6 @@ class Conv(nn.Module):
         self.act = nn.SiLU() if act is True else (act if isinstance(act, nn.Module) else nn.Identity())
 
     def forward(self, x):
-        #print('[Conv is_leaf?]:', x.is_leaf, '[Conv.device]:', x.device)
         return self.act(self.bn(self.conv(x)))
 
     def fuseforward(self, x):
@@ -2075,7 +2074,6 @@ class GraphFPN(nn.Module):
         self.context5 = ContextualLayers(in_feats, out_feats)
         self.context6 = ContextualLayers(in_feats, out_feats)
 
-        # check whether modify 1344 -> 21504(1344 * 16 batches)
         self.g = simple_birected(build_edges(heterograph("pixel", 256, 1344 * 1)))
         self.g = dgl.add_self_loop(self.g, etype="contextual")
         self.g = dgl.add_self_loop(self.g, etype="hierarchical")
@@ -2099,27 +2097,35 @@ class GraphFPN(nn.Module):
         p_final = torch.concat([p3_gnn, p4_gnn, p5_gnn], axis=0)
         #print('p_final:', p_final.shape)
         
-        
+        # graph would detach with subgraph if graph is moved to the other device
         device = p_final.device
-        self.g, self.subg_c, self.subg_h    \
-            = self.g.to(device), self.subg_c.to(device), self.subg_h.to(device)
+        if self.g.device != device:
+            self.g = self.g.to(device)
+            self.subg_c = hetero_subgraph(self.g, "contextual")
+            self.subg_h = hetero_subgraph(self.g, "hierarchical")
         
-        self.g = cnn_gnn(self.g, p_final)
+        # due to GATConv cannot batch computation yet?
+        p_cnn = []
+        for batch in range(p_final.shape[0] // 1344):
+            self.g = cnn_gnn(self.g, p_final[batch * 1344: (batch + 1) * 1344])
+            nodes_update(self.subg_c, self.context1(self.subg_c, self.subg_c.ndata["pixel"]))
+            '''
+            nodes_update(self.subg_c, self.context2(self.subg_c, self.subg_c.ndata["pixel"]))
+            nodes_update(self.subg_c, self.context3(self.subg_c, self.subg_c.ndata["pixel"]))
+            nodes_update(self.subg_h, self.hierarch1(self.subg_h, self.subg_h.ndata["pixel"]))
+            nodes_update(self.subg_h, self.hierarch2(self.subg_h, self.subg_h.ndata["pixel"]))
+            nodes_update(self.subg_h, self.hierarch3(self.subg_h, self.subg_h.ndata["pixel"]))
+            nodes_update(self.subg_c, self.context4(self.subg_c, self.subg_c.ndata["pixel"]))
+            nodes_update(self.subg_c, self.context5(self.subg_c, self.subg_c.ndata["pixel"]))
+            nodes_update(self.subg_c, self.context6(self.subg_c, self.subg_c.ndata["pixel"]))
+            '''
+
+            p_cnn.extend(gnn_cnn(self.g))
         
-        nodes_update(self.subg_c, self.context1(self.subg_c, self.subg_c.ndata["pixel"]))
-        nodes_update(self.subg_c, self.context2(self.subg_c, self.subg_c.ndata["pixel"]))
-        nodes_update(self.subg_c, self.context3(self.subg_c, self.subg_c.ndata["pixel"]))
-        nodes_update(self.subg_h, self.hierarch1(self.subg_h, self.subg_h.ndata["pixel"]))
-        nodes_update(self.subg_h, self.hierarch2(self.subg_h, self.subg_h.ndata["pixel"]))
-        nodes_update(self.subg_h, self.hierarch3(self.subg_h, self.subg_h.ndata["pixel"]))
-        nodes_update(self.subg_c, self.context4(self.subg_c, self.subg_c.ndata["pixel"]))
-        nodes_update(self.subg_c, self.context5(self.subg_c, self.subg_c.ndata["pixel"]))
-        nodes_update(self.subg_c, self.context6(self.subg_c, self.subg_c.ndata["pixel"]))
-        
-        # data fusion
-        p_cnn = gnn_cnn(self.g) # return list
-        
-        return p_cnn
+        # reshape features to the batch size
+        p3_cnn, p4_cnn, p5_cnn = torch.cat(p_cnn[0::3], axis=0), torch.cat(p_cnn[1::3], axis=0), torch.cat(p_cnn[2::3], axis=0)
+
+        return [p3_cnn, p4_cnn, p5_cnn]
 
 
 class Gnn2Cnn(nn.Module):
